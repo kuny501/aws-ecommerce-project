@@ -1,6 +1,8 @@
 import { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } from '@aws-sdk/client-sqs';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, UpdateCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import mysql from 'mysql2/promise';
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
 
 // Configuration
 const REGION = 'eu-west-1';
@@ -8,10 +10,37 @@ const QUEUE_URL = process.env.LONG_TASKS_QUEUE_URL;
 const TABLE_NAME = process.env.DYNAMODB_TABLE_NAME || 'ecommerce-orders';
 const POLL_INTERVAL = 5000; // 5 secondes entre chaque poll
 
+// SNS Topic ARNs
+const ORDER_COMPLETED_TOPIC = process.env.SNS_ORDER_COMPLETED_TOPIC || 'arn:aws:sns:eu-west-1:165835313411:ecommerce-order-completed';
+const ADMIN_ALERTS_TOPIC = process.env.SNS_ADMIN_ALERTS_TOPIC || 'arn:aws:sns:eu-west-1:165835313411:ecommerce-admin-alerts';
+
 // Clients AWS
 const sqsClient = new SQSClient({ region: REGION });
 const dynamoClient = new DynamoDBClient({ region: REGION });
 const dynamoDB = DynamoDBDocumentClient.from(dynamoClient);
+const snsClient = new SNSClient({ region: REGION });
+
+// RDS Configuration
+const RDS_CONFIG = {
+  host: process.env.RDS_HOST || 'ecommerce-analytics-db.xxxxxxxxx.eu-west-1.rds.amazonaws.com',
+  user: process.env.RDS_USER || 'admin',
+  password: process.env.RDS_PASSWORD || 'VOTRE_MOT_DE_PASSE',
+  database: process.env.RDS_DATABASE || 'ecommerce',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+};
+
+// Pool de connexions MySQL
+let mysqlPool = null;
+
+async function getMySQLPool() {
+  if (!mysqlPool) {
+    mysqlPool = mysql.createPool(RDS_CONFIG);
+    console.log('📊 MySQL connection pool created');
+  }
+  return mysqlPool;
+}
 
 // État du worker
 let isRunning = true;
@@ -89,7 +118,7 @@ async function pollAndProcess() {
     console.log('✅ Message deleted from queue\n');
 
   } catch (error) {
-    console.error('❌ Error processing order:', error);
+    console.error('❌ Error processing order:', error)
     // Le message restera dans SQS et sera retraité
   } finally {
     currentOrder = null;
@@ -100,32 +129,55 @@ async function processOrder(orderData) {
   const { orderId } = orderData;
 
   // ÉTAPE 1 : Update status to "processing"
-  console.log('📋 Step 1/4: Starting order processing...');
+  console.log('📋 Step 1/6: Starting order processing...');
   await updateOrderStatus(orderId, 'processing', 'Order processing started');
   await sleep(2000);
+  // Notifier l'admin de la nouvelle commande
+    try {
+    await sendAdminNotification(orderData, 'new_order');
+  } catch (error) {
+    console.error('⚠️  Failed to send admin notification:', error.message);
+  }
 
-  // ÉTAPE 2 : Packaging simulation (3 minutes)
-  console.log('📦 Step 2/4: Packaging (simulating 3 minutes)...');
+  // ÉTAPE 2 : Packaging simulation
+  console.log('📦 Stpe 2/6: Packaging (simulating 30 seconds)...');
   await updateOrderStatus(orderId, 'packaging', 'Packaging in progress');
   await simulatePackaging();
   console.log('✅ Packaging complete');
 
-  // ÉTAPE 3 : Shipping simulation (10 minutes)
-  console.log('🚚 Step 3/4: Shipping (simulating 10 minutes)...');
+  // ÉTAPE 3 : Shipping simulation
+  console.log('🚚 Stpe 3/6: Shipping (simulating 1 minute)...');
   await updateOrderStatus(orderId, 'shipping', 'Order shipped');
   await simulateShipping();
   console.log('✅ Shipping complete');
 
   // ÉTAPE 4 : Mark as completed
-  console.log('🎉 Step 4/4: Completing order...');
+  console.log('🎉 Stpe 4/6: Completing order...');
   await updateOrderStatus(orderId, 'completed', 'Order delivered');
-  console.log('✅ Order completed successfully\n');
+  console.log('✅ Order completed successfully');
+
+  // ÉTAPE 5 : Copy to RDS for analytics
+  console.log('📊 Step 5/6: Copying to RDS for analytics...');
+  try {
+    await copyToRDS(orderId);
+    console.log('✅ Order data copied to RDS\n');
+  } catch (error) {
+    console.error('⚠️  Failed to copy to RDS (non-blocking):', error.message);
+  }
+    // ÉTAPE 6 : Send notification email
+  console.log('📧 Step 6/6: Sending notification email...');
+  try {
+    await sendOrderCompletedNotification(orderData);
+    console.log('✅ Notification email sent\n');
+  } catch (error) {
+    console.error('⚠️  Failed to send notification (non-blocking):', error.message);
+  }
 }
 
 async function simulatePackaging() {
-  // Simulation de 3 minutes
-  const PACKAGING_TIME = 3 * 60 * 1000; // 3 minutes in ms
-  const STEPS = 6; // 6 étapes de 30 secondes
+ // Simulation de 30 secondes
+  const PACKAGING_TIME = 30 * 1000; // 30 secondes in ms
+  const STEPS = 6; // 6 étapes de 5 secondes
   const STEP_TIME = PACKAGING_TIME / STEPS;
 
   for (let i = 1; i <= STEPS; i++) {
@@ -133,13 +185,13 @@ async function simulatePackaging() {
     const progress = Math.round((i / STEPS) * 100);
     process.stdout.write(`\r📦 Packaging progress: ${progress}%`);
   }
-  console.log(''); // Nouvelle ligne
+  console.log('');
 }
 
 async function simulateShipping() {
-  // Simulation de 10 minutes
-  const SHIPPING_TIME = 10 * 60 * 1000; // 10 minutes in ms
-  const STEPS = 20; // 20 étapes de 30 secondes
+  // Simulation de 1 minute
+  const SHIPPING_TIME = 60 * 1000; // 1 minute in ms
+  const STEPS = 12; // 12 étapes de 5 secondes
   const STEP_TIME = SHIPPING_TIME / STEPS;
 
   for (let i = 1; i <= STEPS; i++) {
@@ -147,7 +199,7 @@ async function simulateShipping() {
     const progress = Math.round((i / STEPS) * 100);
     process.stdout.write(`\r🚚 Shipping progress: ${progress}%`);
   }
-  console.log(''); // Nouvelle ligne
+  console.log('');
 }
 
 async function updateOrderStatus(orderId, status, message) {
@@ -176,7 +228,7 @@ async function updateOrderStatus(orderId, status, message) {
 async function deleteMessage(receiptHandle) {
   const command = new DeleteMessageCommand({
     QueueUrl: QUEUE_URL,
-    ReceiptHandle: receiptHandle,
+	ReceiptHandle: receiptHandle,
   });
 
   await sqsClient.send(command);
@@ -186,6 +238,161 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function copyToRDS(orderId) {
+  // Récupérer les données complètes depuis DynamoDB
+  const getCommand = new GetCommand({
+    TableName: TABLE_NAME,
+    Key: { orderId },
+  });
+
+  const result = await dynamoDB.send(getCommand);
+
+  if (!result.Item) {
+    throw new Error(`Order ${orderId} not found in DynamoDB`);
+  }
+
+  const order = result.Item;
+  const pool = await getMySQLPool();
+
+  // Insérer dans RDS
+  const insertOrderQuery = `
+    INSERT INTO orders (
+      order_id, event_id, session_id, customer_id, customer_email, customer_name,
+      amount_total, currency, payment_status, order_status,
+      created_at, updated_at,
+      processing_started_at, packaging_started_at, shipping_started_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+	  order_status = VALUES(order_status),
+      updated_at = VALUES(updated_at),
+      completed_at = VALUES(completed_at)
+  `;
+
+  const orderValues = [
+    order.orderId,
+    order.eventId,
+    order.sessionId,
+    order.customerId,
+    order.customerEmail,
+    order.customerName,
+    order.amountTotal,
+    order.currency,
+    order.paymentStatus,
+    order.orderStatus,
+    order.createdAt,
+    order.updatedAt,
+    order.processingStartedAt || null,
+    order.packagingStartedAt || null,
+    order.shippingStartedAt || null,
+    order.completedAt || null,
+  ];
+
+  await pool.execute(insertOrderQuery, orderValues);
+
+  // Insérer les logs
+  if (order.logs && order.logs.length > 0) {
+    const insertLogQuery = `
+      INSERT IGNORE INTO order_logs (order_id, status, message, timestamp)
+      VALUES (?, ?, ?, ?)
+    `;
+
+    for (const log of order.logs) {
+      await pool.execute(insertLogQuery, [
+	    order.orderId,
+        log.status,
+        log.message,
+        log.timestamp,
+      ]);
+    }
+  }
+
+  console.log(`✅ Order ${orderId} copied to RDS`);
+}
+
+async function sendOrderCompletedNotification(orderData) {
+  const { orderId, customerEmail, customerName, amountTotal, currency } = orderData;
+
+  // Message pour le client
+  const subject = `✅ Your Order ${orderId} has been delivered!`;
+  const message = `
+Hello ${customerName || 'Customer'},
+
+Great news! Your order has been successfully delivered! 🎉
+
+Order Details:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Order ID: ${orderId}
+Amount: ${(amountTotal / 100).toFixed(2)} ${currency.toUpperCase()}
+Status: ✅ DELIVERED
+
+Timeline:
+- Order Received: ✓
+- Payment Confirmed: ✓
+- Packaging Complete: ✓
+- Shipped: ✓
+- Delivered: ✓
+
+Thank you for shopping with us!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Questions? Contact us at support@ecommerce.com
+
+Best regards,
+The E-commerce Team
+  `.trim();
+
+  // Publier sur SNS
+  const publishCommand = new PublishCommand({
+    TopicArn: ORDER_COMPLETED_TOPIC,
+    Subject: subject,
+    Message: message,
+    MessageAttributes: {
+      orderId: {
+        DataType: 'String',
+        StringValue: orderId,
+      },
+      customerEmail: {
+        DataType: 'String',
+        StringValue: customerEmail || 'unknown',
+      },
+    },
+  });
+
+  await snsClient.send(publishCommand);
+  console.log(`📧 Notification sent for order ${orderId}`);
+}
+
+async function sendAdminNotification(orderData, type) {
+  const { orderId, customerEmail, amountTotal, currency } = orderData;
+
+  let subject, message;
+
+  if (type === 'new_order') {
+    subject = `🛒 New Order: ${orderId}`;
+    message = `
+New order received!
+
+Order ID: ${orderId}
+Customer: ${customerEmail}
+Amount: ${(amountTotal / 100).toFixed(2)} ${currency.toUpperCase()}
+Status: Processing
+
+View in Dashboard: [Link to Admin Panel]
+    `.trim();
+  } else if (type === 'error') {
+    subject = `❌ Order Processing Error: ${orderId}`;
+    message = `Error processing order ${orderId}. Please check logs.`;
+  }
+
+  const publishCommand = new PublishCommand({
+    TopicArn: ADMIN_ALERTS_TOPIC,
+    Subject: subject,
+    Message: message,
+  });
+
+  await snsClient.send(publishCommand);
+}
 // Start the worker
 main().catch(error => {
   console.error('💥 Fatal error:', error);

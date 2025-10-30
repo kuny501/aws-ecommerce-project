@@ -2,12 +2,14 @@
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
   description = "Security group for RDS MySQL"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     from_port       = 3306
     to_port         = 3306
     protocol        = "tcp"
     security_groups = [aws_security_group.ec2_worker.id]
+    description     = "Allow MySQL access from EC2 worker"
   }
 
   egress {
@@ -30,13 +32,14 @@ resource "aws_db_instance" "main" {
   instance_class      = "db.t3.micro"
   allocated_storage   = 20
   storage_type        = "gp2"
-  
+
   db_name  = "ecommerce"
   username = var.db_username
   password = var.db_password
 
+  db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
-  
+
   skip_final_snapshot       = true
   backup_retention_period   = 7
   publicly_accessible       = false

@@ -50,6 +50,31 @@ output "rds_endpoint" {
 }
 
 output "sns_topic_arn" {
-  description = "SNS Topic ARN"
+  description = "SNS Topic ARN (legacy)"
   value       = aws_sns_topic.notifications.arn
+}
+
+output "sns_order_completed_topic_arn" {
+  description = "SNS Order Completed Topic ARN"
+  value       = aws_sns_topic.order_completed.arn
+}
+
+output "sns_admin_alerts_topic_arn" {
+  description = "SNS Admin Alerts Topic ARN"
+  value       = aws_sns_topic.admin_alerts.arn
+}
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  description = "Public Subnet IDs"
+  value       = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+}
+
+output "private_subnet_ids" {
+  description = "Private Subnet IDs"
+  value       = [aws_subnet.private_1.id, aws_subnet.private_2.id]
 }

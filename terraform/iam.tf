@@ -173,7 +173,11 @@ resource "aws_iam_role_policy" "ec2_worker_policy" {
         Action = [
           "sns:Publish"
         ]
-        Resource = aws_sns_topic.notifications.arn
+        Resource = [
+          aws_sns_topic.order_completed.arn,
+          aws_sns_topic.admin_alerts.arn,
+          aws_sns_topic.notifications.arn
+        ]
       },
       {
         Effect = "Allow"
