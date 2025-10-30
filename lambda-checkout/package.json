@@ -1,0 +1,9 @@
+{
+  "name": "lambda-checkout",
+  "version": "1.0.0",
+  "description": "Stripe Checkout Lambda for AWS E-commerce",
+  "main": "index.js",
+  "dependencies": {
+    "stripe": "^14.0.0"
+  }
+}

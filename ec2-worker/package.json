@@ -1,0 +1,16 @@
+﻿{
+  "name": "ec2-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "EC2 Worker for long-running order processing tasks",
+  "main": "worker.js",
+  "scripts": {
+    "start": "node worker.js",
+    "dev": "node --watch worker.js"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/lib-dynamodb": "^3.0.0"
+  }
+}
